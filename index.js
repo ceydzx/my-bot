@@ -32,7 +32,7 @@ client.on('messageCreate', async (message) => {
       .setTitle('🤖 Discord Fetcher Bot Commands')
       .setDescription('Naglalaman ng listahan ng mga available na command:')
       .addFields(
-        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com htt[...]' },
+        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com htt[...]
         { name: '.help or !help', value: 'Shows this help message.' }
       )
       .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
@@ -118,14 +118,15 @@ client.on('messageCreate', async (message) => {
     const mode = args[0] || 'full';
 
     if (!message.attachments || message.attachments.size === 0) {
-      return message.reply('❌ **Error:** Please attach a .lua file to analyze. Example: `.l` with an attached file.');
+      return message.reply('❌ **Error:** Please attach a file to analyze.');
     }
 
     const attachment = message.attachments.first();
-    const filename = attachment.name || attachment.filename || 'file.lua';
-
+    let filename = attachment.name || attachment.filename || 'file.lua';
+    
+    // Ensure filename has .lua extension for processing
     if (!filename.toLowerCase().endsWith('.lua')) {
-      return message.reply('❌ **Error:** The attached file must be a .lua file.');
+      filename = filename + '.lua';
     }
 
     // create temp directory
