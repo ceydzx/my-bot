@@ -30,9 +30,10 @@ client.on('messageCreate', async (message) => {
     const helpEmbed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle('🤖 Discord Fetcher Bot Commands')
-      .setDescription('Naglalaman ng listahan ng mga available na command:')
+      .setDescription('Available commands:')
       .addFields(
-        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com htt[...]
+        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com proxy-url`' },
+        { name: '.l [mode]', value: 'Analyzes an attached Lua file and returns a JSON report.\n**Modes:** `full` (default), `compact`\n**Example:** `.l full` with a Lua file attached' },
         { name: '.help or !help', value: 'Shows this help message.' }
       )
       .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
@@ -52,7 +53,7 @@ client.on('messageCreate', async (message) => {
     const proxy = args[1];
 
     if (!url) {
-      return message.reply('❌ **Error:** Pakilagay ang URL. Example: `.get https://api.roblox.com`');
+      return message.reply('❌ **Error:** Please provide a URL. Example: `.get https://api.roblox.com`');
     }
 
     // Step 1: Notify in server channel
