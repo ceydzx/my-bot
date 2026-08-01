@@ -1,5 +1,9 @@
 const { Client, GatewayIntentBits, Partials, EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const { request } = require('./fetcher');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawnSync } = require('child_process');
 require('dotenv').config();
 
 const client = new Client({
@@ -28,7 +32,7 @@ client.on('messageCreate', async (message) => {
       .setTitle('🤖 Discord Fetcher Bot Commands')
       .setDescription('Naglalaman ng listahan ng mga available na command:')
       .addFields(
-        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com http://127.0.0.1:8080`' },
+        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com htt[...]' },
         { name: '.help or !help', value: 'Shows this help message.' }
       )
       .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
@@ -106,6 +110,75 @@ client.on('messageCreate', async (message) => {
 
       console.error('Unexpected error:', err);
       statusMsg.edit('❌ **An error occurred while processing your request.**');
+    }
+  }
+
+  // New dumper command: .l
+  if (command === 'l') {
+    const mode = args[0] || 'full';
+
+    if (!message.attachments || message.attachments.size === 0) {
+      return message.reply('❌ **Error:** Please attach a .lua file to analyze. Example: `.l` with an attached file.');
+    }
+
+    const attachment = message.attachments.first();
+    const filename = attachment.name || attachment.filename || 'file.lua';
+
+    if (!filename.toLowerCase().endsWith('.lua')) {
+      return message.reply('❌ **Error:** The attached file must be a .lua file.');
+    }
+
+    // create temp directory
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'dumper-'));
+    const filepath = path.join(tmpdir, filename);
+
+    const statusMsg = await message.reply('⏳ **Analyzing file... I will DM you the JSON report when ready.**');
+
+    try {
+      // download attachment using existing request helper
+      const [ok, content] = await request(attachment.url);
+      if (!ok) {
+        throw new Error('Failed to download attachment');
+      }
+
+      fs.writeFileSync(filepath, content, 'utf8');
+
+      // run python dumper
+      // Try python3 then python
+      let pyCmd = 'python3';
+      let proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 20000 });
+      if (proc.status !== 0) {
+        // try fallback
+        pyCmd = 'python';
+        proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 20000 });
+      }
+
+      if (proc.error) throw proc.error;
+
+      if (proc.status !== 0) {
+        // Send error DM with stderr
+        const errText = proc.stderr || proc.stdout || 'Unknown error';
+        await message.author.send(`❌ Dumper failed:\n\n${errText}`);
+        await statusMsg.edit('❌ Analysis failed; sent error to your DMs.');
+      } else {
+        const outJson = proc.stdout;
+        const buffer = Buffer.from(outJson, 'utf8');
+        const attachFile = new AttachmentBuilder(buffer, { name: filename + '.report.json' });
+        await message.author.send({ content: `✅ Analysis result for ${filename} (mode=${mode})`, files: [attachFile] });
+        await statusMsg.edit('✅ Analysis complete — I sent the report to your DMs.');
+      }
+
+    } catch (err) {
+      console.error('Dumper error:', err);
+      // DM disabled handling
+      if (err.code === 50007 || err.message?.includes('Cannot send messages')) {
+        return statusMsg.edit('⛔ **Your DMs are disabled!** Please enable DMs so I can send the report.');
+      }
+      await statusMsg.edit('❌ An error occurred while analyzing the file.');
+    } finally {
+      // cleanup
+      try { fs.unlinkSync(filepath); } catch (e) {}
+      try { fs.rmdirSync(tmpdir); } catch (e) {}
     }
   }
 });
