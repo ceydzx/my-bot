@@ -145,34 +145,33 @@ client.on('messageCreate', async (message) => {
 
       fs.writeFileSync(filepath, content, 'utf8');
 
-      // run python dumper
-      // Try python3 then python
-      let pyCmd = 'python3';
-      let proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
-      
-      if (proc.error || proc.status !== 0) {
-        // try fallback to python
-        if (proc.error?.code === 'ENOENT') {
-          pyCmd = 'python';
-          proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
-        }
-      }
+      // run python dumper - only try python3
+      const proc = spawnSync('python3', ['dumper/run_dumper.py', filepath, mode], { 
+        encoding: 'utf8', 
+        timeout: 30000, 
+        maxBuffer: 10 * 1024 * 1024,
+        shell: true  // Enable shell to find python3 in PATH
+      });
 
       if (proc.error) {
-        throw new Error(`Python process error: ${proc.error.message}`);
+        throw new Error(`Cannot execute python3: ${proc.error.message}. Make sure Python 3 is installed and accessible.`);
+      }
+
+      if (!proc.stdout) {
+        throw new Error('No output from dumper. Stderr: ' + (proc.stderr || 'none'));
       }
 
       let result;
       try {
         result = JSON.parse(proc.stdout);
       } catch (parseErr) {
-        throw new Error(`Failed to parse dumper output: ${proc.stdout.substring(0, 200)}`);
+        throw new Error(`Failed to parse dumper output. First 300 chars: ${proc.stdout.substring(0, 300)}`);
       }
 
       if (result.error) {
         // Dumper returned an error
         const errMsg = result.traceback ? `${result.error}\n\n${result.traceback}` : result.error;
-        await message.author.send(`❌ Dumper error:\n\`\`\`\n${errMsg}\n\`\`\``);
+        await message.author.send(`❌ Dumper error:\n\`\`\`\n${errMsg.substring(0, 1950)}\n\`\`\``);
         await statusMsg.edit('❌ Analysis failed; sent error details to your DMs.');
       } else {
         const buffer = Buffer.from(proc.stdout, 'utf8');
