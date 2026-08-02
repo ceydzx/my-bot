@@ -33,7 +33,7 @@ client.on('messageCreate', async (message) => {
       .setDescription('Available commands:')
       .addFields(
         { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com proxy-url`' },
-        { name: '.l [mode]', value: 'Analyzes an attached Lua file and returns a JSON report.\n**Modes:** `full` (default), `compact`\n**Example:** `.l full` with a Lua file attached' },
+        { name: '.l [mode]', value: 'Analyzes an attached file as Lua code and returns a JSON report.\n**Modes:** `full` (default), `compact`\n**Example:** `.l full` with an attached file' },
         { name: '.help or !help', value: 'Shows this help message.' }
       )
       .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
@@ -148,23 +148,34 @@ client.on('messageCreate', async (message) => {
       // run python dumper
       // Try python3 then python
       let pyCmd = 'python3';
-      let proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 20000 });
-      if (proc.status !== 0) {
-        // try fallback
-        pyCmd = 'python';
-        proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 20000 });
+      let proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+      
+      if (proc.error || proc.status !== 0) {
+        // try fallback to python
+        if (proc.error?.code === 'ENOENT') {
+          pyCmd = 'python';
+          proc = spawnSync(pyCmd, ['dumper/run_dumper.py', filepath, mode], { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+        }
       }
 
-      if (proc.error) throw proc.error;
+      if (proc.error) {
+        throw new Error(`Python process error: ${proc.error.message}`);
+      }
 
-      if (proc.status !== 0) {
-        // Send error DM with stderr
-        const errText = proc.stderr || proc.stdout || 'Unknown error';
-        await message.author.send(`❌ Dumper failed:\n\n${errText}`);
-        await statusMsg.edit('❌ Analysis failed; sent error to your DMs.');
+      let result;
+      try {
+        result = JSON.parse(proc.stdout);
+      } catch (parseErr) {
+        throw new Error(`Failed to parse dumper output: ${proc.stdout.substring(0, 200)}`);
+      }
+
+      if (result.error) {
+        // Dumper returned an error
+        const errMsg = result.traceback ? `${result.error}\n\n${result.traceback}` : result.error;
+        await message.author.send(`❌ Dumper error:\n\`\`\`\n${errMsg}\n\`\`\``);
+        await statusMsg.edit('❌ Analysis failed; sent error details to your DMs.');
       } else {
-        const outJson = proc.stdout;
-        const buffer = Buffer.from(outJson, 'utf8');
+        const buffer = Buffer.from(proc.stdout, 'utf8');
         const attachFile = new AttachmentBuilder(buffer, { name: filename + '.report.json' });
         await message.author.send({ content: `✅ Analysis result for ${filename} (mode=${mode})`, files: [attachFile] });
         await statusMsg.edit('✅ Analysis complete — I sent the report to your DMs.');
@@ -176,7 +187,7 @@ client.on('messageCreate', async (message) => {
       if (err.code === 50007 || err.message?.includes('Cannot send messages')) {
         return statusMsg.edit('⛔ **Your DMs are disabled!** Please enable DMs so I can send the report.');
       }
-      await statusMsg.edit('❌ An error occurred while analyzing the file.');
+      await statusMsg.edit(`❌ Error: ${err.message}`);
     } finally {
       // cleanup
       try { fs.unlinkSync(filepath); } catch (e) {}
