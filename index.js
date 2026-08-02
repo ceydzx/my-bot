@@ -1,206 +1,115 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, AttachmentBuilder } = require('discord.js');
-const { request } = require('./fetcher');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const LuaDumper = require('./dumper/lua-dumper');
-
-require('dotenv').config();
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
-  ],
-  partials: [Partials.Channel, Partials.Message],
-});
-
-const PREFIX = '.';
-
-client.once('ready', () => {
-  console.log(`[ONLINE] Logged in as ${client.user.tag}`);
-});
-
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
-  // Command handlers (.help and !help)
-  if (message.content === '.help' || message.content === '!help') {
-    const helpEmbed = new EmbedBuilder()
-      .setColor(0x5865F2)
-      .setTitle('🤖 Discord Fetcher Bot Commands')
-      .setDescription('Available commands:')
-      .addFields(
-        { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com proxy-url`' },
-        { name: '.l [mode]', value: 'Analyzes an attached Lua file and returns a JSON report.\n**Modes:** `full` (default), `strings`, `patterns`\n**Example:** `.l full` with an attached file' },
-        { name: '.help or !help', value: 'Shows this help message.' }
-      )
-      .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
-      .setTimestamp();
-
-    return message.reply({ embeds: [helpEmbed] });
-  }
-
-  // Check prefix
-  if (!message.content.startsWith(PREFIX)) return;
-
-  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-  const command = args.shift().toLowerCase();
-
-  if (command === 'get') {
-    const url = args[0];
-    const proxy = args[1];
-
-    if (!url) {
-      return message.reply('❌ **Error:** Please provide a URL. Example: `.get https://api.roblox.com`');
+"l": {
+  aliases: ["dump", "analyze", "log", "unveilr"],
+  description: "Analyzes an attached Lua file and returns a detailed JSON report.",
+  callback: command(async (msg, a, userData) => {
+    if (!msg.attachments || msg.attachments.size === 0) {
+      return msg.reply('❌ **Error:** Please attach a Lua file to analyze.\n-# Example: `.l` with an attached `.lua` file\n-# Use `.l deobf` to decode Base64 strings');
     }
 
-    // Step 1: Notify in server channel
-    const statusMsg = await message.reply('⏳ **Fetching... sent to your DMs**');
-
-    // Step 2: Try DMing the user first to verify DMs are open
-    try {
-      // Perform request
-      const [success, result] = await request(url, proxy);
-
-      if (success) {
-        // Send success payload via DM
-        if (result.length > 2000) {
-          // If result is very long, attach as file or split
-          if (result.length > 6000) {
-            const buffer = Buffer.from(result, 'utf-8');
-            const attachment = new AttachmentBuilder(buffer, { name: 'result.txt' });
-
-            await message.author.send({
-              content: `✅ **Result for:** ${url} (Attached as .txt because content length is ${result.length} chars):`,
-              files: [attachment]
-            });
-          } else {
-            // Split into multiple chunks of ~1900 chars
-            const chunks = result.match(/[\s\S]{1,1900}/g) || [result];
-            await message.author.send('✅ **Result for:** ' + url + ` (${chunks.length} parts):`);
-            for (let i = 0; i < chunks.length; i++) {
-              await message.author.send('```js\n' + chunks[i] + '\n```');
-            }
-          }
-        } else {
-          // Standard length message
-          await message.author.send('✅ **Result for:** ' + url + '\n```js\n' + result + '\n```');
-        }
-      } else {
-        // Request failed, send Red Embed to DM
-        const errorEmbed = new EmbedBuilder()
-          .setColor(0xFF0000)
-          .setTitle('❌ Fetch Error')
-          .setDescription(result)
-          .addFields(
-            { name: 'Requested URL', value: '```' + url + '```' },
-            { name: 'Proxy Used', value: proxy ? '```' + proxy + '```' : 'None' }
-          )
-          .setTimestamp();
-
-        await message.author.send({ embeds: [errorEmbed] });
-      }
-
-    } catch (err) {
-      // Catch DM Disabled error (Discord API Error Code 50007: Cannot send messages to this user)
-      if (err.code === 50007 || err.message?.includes('Cannot send messages')) {
-        return statusMsg.edit('⛔ **Your DMs are disabled!** Please enable "Allow direct messages from server members" in User Settings > Privacy & Safety so I can send you the result.');
-      }
-
-      console.error('Unexpected error:', err);
-      statusMsg.edit('❌ **An error occurred while processing your request.**');
-    }
-  }
-
-  // New dumper command: .l (Lua dumper - Node.js only, no Python needed)
-  if (command === 'l') {
-    const mode = args[0] || 'full';
-
-    if (!message.attachments || message.attachments.size === 0) {
-      return message.reply('❌ **Error:** Please attach a file to analyze.');
-    }
-
-    const attachment = message.attachments.first();
+    const attachment = msg.attachments.first();
     let filename = attachment.name || attachment.filename || 'file.lua';
+    const deobfuscate = msg.content.toLowerCase().includes('deobf');
     
-    // Ensure filename has .lua extension for processing
     if (!filename.toLowerCase().endsWith('.lua')) {
       filename = filename + '.lua';
     }
 
-    // create temp directory
-    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'dumper-'));
+    const fs = require('fs').promises;
+    const path = require('path');
+    const os = require('os');
+    const { request } = require('./fetcher');
+    const LuaDumper = require('./dumper/lua-dumper');
+    const { AttachmentBuilder } = require('discord.js');
+
+    const tmpdir = path.join(os.tmpdir(), 'dumper-' + Math.random().toString(36).substring(7));
     const filepath = path.join(tmpdir, filename);
 
-    const statusMsg = await message.reply('⏳ **Analyzing file... I will DM you the JSON report when ready.**');
-
     try {
-      // download attachment
+      await fs.mkdir(tmpdir, { recursive: true });
+
+      const statusMsg = await msg.reply(`⏳ **Analyzing Lua file...${deobfuscate ? '\n🔓 Decoding Base64 strings...' : ''}\n**-# This may take a moment.`);
+
+      // Download file
       const [ok, content] = await request(attachment.url);
       if (!ok) {
-        throw new Error('Failed to download attachment');
+        throw new Error('Failed to download file from Discord');
       }
 
-      fs.writeFileSync(filepath, content, 'utf8');
+      await fs.writeFile(filepath, content, 'utf8');
 
-      // Use Node.js-based Lua dumper (no Python needed!)
+      // Analyze with LuaDumper
       const dumper = new LuaDumper();
-      const result = dumper.analyze(filepath, mode);
+      const result = dumper.analyze(filepath, 'full', deobfuscate);
       const summary = dumper.summary([result]);
 
       if (result.error) {
-        // File read or analysis error
-        await message.author.send(`❌ Analysis error:\n\`\`\`\n${result.error}\n\`\`\``);
-        await statusMsg.edit('❌ Analysis failed; sent error details to your DMs.');
-      } else {
-        // Success - send JSON report
-        const reportData = {
-          summary,
-          result,
-          timestamp: new Date().toISOString(),
-        };
+        await msg.author.send(`❌ **Analysis Error:**\n\`\`\`\n${result.error}\n\`\`\``).catch(() => {});
+        return statusMsg.edit('❌ **Analysis failed!** Sent error details to your DMs.');
+      }
 
-        const buffer = Buffer.from(JSON.stringify(reportData, null, 2), 'utf8');
-        const attachFile = new AttachmentBuilder(buffer, { name: filename + '.report.json' });
-        
-        // Also send a text summary
-        const summaryText = `✅ **Analysis Complete**
+      // Create JSON report
+      const reportData = {
+        summary,
+        result,
+        timestamp: new Date().toISOString(),
+      };
+
+      const buffer = Buffer.from(JSON.stringify(reportData, null, 2), 'utf8');
+      const attachFile = new AttachmentBuilder(buffer, { name: filename + '.report.json' });
+      
+      // Create summary message
+      let summaryText = `✅ **Analysis Complete**
         
 📊 **Summary:**
-• Files analyzed: ${summary.files_analyzed}
-• Functions found: ${summary.total_functions}
-• Strings found: ${summary.total_strings}
-• Obfuscated: ${summary.obfuscated_files > 0 ? '⚠️ Yes' : '✅ No'}
-• Mode: ${mode}
+• Files analyzed: \`${summary.files_analyzed}\`
+• Functions found: \`${summary.total_functions}\`
+• Strings extracted: \`${summary.total_strings}\`
+• Base64 strings found: \`${summary.base64_strings_found}\`
+• Code patterns found: \`${Object.values(result.patterns).reduce((sum, arr) => sum + arr.length, 0)}\`
+• Obfuscated: ${summary.obfuscated_files > 0 ? '⚠️ **Yes**' : '✅ **No**'}
+• Obfuscation confidence: \`${result.metrics.is_obfuscated.confidence}%\`
 
-📁 Attached: \`${filename}.report.json\``;
+📈 **Metrics:**
+• Total lines: \`${result.metrics.lines}\`
+• Characters: \`${result.metrics.chars}\`
+• MD5: \`${result.metrics.md5}\`
+• SHA256: \`${result.metrics.sha256}\``;
 
-        await message.author.send({
+      if (deobfuscate && result.base64Decoded && result.base64Decoded.length > 0) {
+        summaryText += `\n\n🔓 **Base64 Decoded Strings:** \`${result.base64Decoded.length}\` found\n`;
+        result.base64Decoded.slice(0, 5).forEach((item, i) => {
+          summaryText += `${i + 1}. \`${item.original.substring(0, 30)}...\` → \`${item.decoded.substring(0, 40)}...\`\n`;
+        });
+        if (result.base64Decoded.length > 5) {
+          summaryText += `... and ${result.base64Decoded.length - 5} more`;
+        }
+      }
+
+      summaryText += `\n\n📁 **Report:** Attached as JSON file`;
+
+      try {
+        await msg.author.send({
           content: summaryText,
           files: [attachFile]
         });
         
-        await statusMsg.edit('✅ Analysis complete — I sent the report to your DMs.');
+        await statusMsg.edit('✅ **Analysis complete!** Check your DMs for the detailed report.');
+      } catch (dmError) {
+        await statusMsg.edit('❌ **Unable to send DM!** Make sure your DMs are enabled.');
       }
 
     } catch (err) {
       console.error('Dumper error:', err);
-      
-      // DM disabled handling
-      if (err.code === 50007 || err.message?.includes('Cannot send messages')) {
-        return statusMsg.edit('⛔ **Your DMs are disabled!** Please enable DMs so I can send the report.');
-      }
-      
-      await statusMsg.edit(`❌ Error: ${err.message}`);
+      await statusMsg.edit(`❌ **Error:** ${err.message}`);
     } finally {
-      // cleanup
-      try { fs.unlinkSync(filepath); } catch (e) {}
-      try { fs.rmdirSync(tmpdir); } catch (e) {}
+      try {
+        const fs_sync = require('fs');
+        if (fs_sync.existsSync(tmpdir)) {
+          fs_sync.rmSync(tmpdir, { recursive: true, force: true });
+        }
+      } catch (e) {
+        console.error('Cleanup error:', e);
+      }
     }
-  }
-});
-
-client.login(process.env.DISCORD_TOKEN);
+  })
+}
