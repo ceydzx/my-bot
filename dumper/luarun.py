@@ -54,12 +54,16 @@ _log("DONE", string.format("%.3fs", os.clock() - _t0))
             )
             return {
                 'ok': r.returncode == 0,
-                'out': r.stdout,
-                'err': r.stderr,
+                'out': r.stdout if r.stdout else '',
+                'err': r.stderr if r.stderr else '',
                 'code': r.returncode,
             }
         except subprocess.TimeoutExpired:
-            return {'ok': False, 'out': '', 'err': 'timeout', 'code': -1}
+            return {'ok': False, 'out': '', 'err': 'Lua execution timeout (10s)', 'code': -1}
+        except FileNotFoundError:
+            return {'ok': False, 'out': '', 'err': 'Lua interpreter not found', 'code': -1}
+        except Exception as e:
+            return {'ok': False, 'out': '', 'err': str(e), 'code': -1}
 
     def get_funcs(self, src: str) -> List[Dict]:
         pats = [
@@ -89,8 +93,17 @@ _log("DONE", string.format("%.3fs", os.clock() - _t0))
         }
 
     def process(self, path: str) -> Dict:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            src = f.read()
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                src = f.read()
+        except Exception as e:
+            return {
+                'file': path,
+                'error': f'Failed to read file: {str(e)}',
+                'metrics': None,
+                'functions': [],
+                'run': None,
+            }
 
         m = self.metrics(src)
         harness = self.build_harness(src, "full")
