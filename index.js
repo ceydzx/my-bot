@@ -3,7 +3,8 @@ const { request } = require('./fetcher');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawnSync } = require('child_process');
+const LuaDumper = require('./dumper/lua-dumper');
+
 require('dotenv').config();
 
 const client = new Client({
@@ -33,7 +34,7 @@ client.on('messageCreate', async (message) => {
       .setDescription('Available commands:')
       .addFields(
         { name: '.get <url> [proxy]', value: 'Fetches content from a URL with optional proxy support.\n**Example 1:** `.get https://api.roblox.com`\n**Example 2:** `.get https://api.roblox.com proxy-url`' },
-        { name: '.l [mode]', value: 'Analyzes an attached file as Lua code and returns a JSON report.\n**Modes:** `full` (default), `compact`\n**Example:** `.l full` with an attached file' },
+        { name: '.l [mode]', value: 'Analyzes an attached Lua file and returns a JSON report.\n**Modes:** `full` (default), `strings`, `patterns`\n**Example:** `.l full` with an attached file' },
         { name: '.help or !help', value: 'Shows this help message.' }
       )
       .setFooter({ text: 'Discord.js v14 Bot • Direct Message Results' })
@@ -114,7 +115,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // New dumper command: .l
+  // New dumper command: .l (Lua dumper - Node.js only, no Python needed)
   if (command === 'l') {
     const mode = args[0] || 'full';
 
@@ -137,7 +138,7 @@ client.on('messageCreate', async (message) => {
     const statusMsg = await message.reply('⏳ **Analyzing file... I will DM you the JSON report when ready.**');
 
     try {
-      // download attachment using existing request helper
+      // download attachment
       const [ok, content] = await request(attachment.url);
       if (!ok) {
         throw new Error('Failed to download attachment');
@@ -145,47 +146,54 @@ client.on('messageCreate', async (message) => {
 
       fs.writeFileSync(filepath, content, 'utf8');
 
-      // run python dumper - only try python3
-      const proc = spawnSync('python3', ['dumper/run_dumper.py', filepath, mode], { 
-        encoding: 'utf8', 
-        timeout: 30000, 
-        maxBuffer: 10 * 1024 * 1024,
-        shell: true  // Enable shell to find python3 in PATH
-      });
-
-      if (proc.error) {
-        throw new Error(`Cannot execute python3: ${proc.error.message}. Make sure Python 3 is installed and accessible.`);
-      }
-
-      if (!proc.stdout) {
-        throw new Error('No output from dumper. Stderr: ' + (proc.stderr || 'none'));
-      }
-
-      let result;
-      try {
-        result = JSON.parse(proc.stdout);
-      } catch (parseErr) {
-        throw new Error(`Failed to parse dumper output. First 300 chars: ${proc.stdout.substring(0, 300)}`);
-      }
+      // Use Node.js-based Lua dumper (no Python needed!)
+      const dumper = new LuaDumper();
+      const result = dumper.analyze(filepath, mode);
+      const summary = dumper.summary([result]);
 
       if (result.error) {
-        // Dumper returned an error
-        const errMsg = result.traceback ? `${result.error}\n\n${result.traceback}` : result.error;
-        await message.author.send(`❌ Dumper error:\n\`\`\`\n${errMsg.substring(0, 1950)}\n\`\`\``);
+        // File read or analysis error
+        await message.author.send(`❌ Analysis error:\n\`\`\`\n${result.error}\n\`\`\``);
         await statusMsg.edit('❌ Analysis failed; sent error details to your DMs.');
       } else {
-        const buffer = Buffer.from(proc.stdout, 'utf8');
+        // Success - send JSON report
+        const reportData = {
+          summary,
+          result,
+          timestamp: new Date().toISOString(),
+        };
+
+        const buffer = Buffer.from(JSON.stringify(reportData, null, 2), 'utf8');
         const attachFile = new AttachmentBuilder(buffer, { name: filename + '.report.json' });
-        await message.author.send({ content: `✅ Analysis result for ${filename} (mode=${mode})`, files: [attachFile] });
+        
+        // Also send a text summary
+        const summaryText = `✅ **Analysis Complete**
+        
+📊 **Summary:**
+• Files analyzed: ${summary.files_analyzed}
+• Functions found: ${summary.total_functions}
+• Strings found: ${summary.total_strings}
+• Obfuscated: ${summary.obfuscated_files > 0 ? '⚠️ Yes' : '✅ No'}
+• Mode: ${mode}
+
+📁 Attached: \`${filename}.report.json\``;
+
+        await message.author.send({
+          content: summaryText,
+          files: [attachFile]
+        });
+        
         await statusMsg.edit('✅ Analysis complete — I sent the report to your DMs.');
       }
 
     } catch (err) {
       console.error('Dumper error:', err);
+      
       // DM disabled handling
       if (err.code === 50007 || err.message?.includes('Cannot send messages')) {
         return statusMsg.edit('⛔ **Your DMs are disabled!** Please enable DMs so I can send the report.');
       }
+      
       await statusMsg.edit(`❌ Error: ${err.message}`);
     } finally {
       // cleanup
