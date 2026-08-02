@@ -6,10 +6,56 @@ class LuaDumper {
     this.cache = {};
   }
 
-  // Extract strings from Lua code (handles both quoted and escaped strings)
+  // Decode Base64 strings
+  decodeBase64Strings(src) {
+    const decodedStrings = [];
+    
+    // Match base64 patterns (common in obfuscated code)
+    const base64Pattern = /["']([A-Za-z0-9+/]{20,}={0,2})["']/g;
+    let match;
+
+    while ((match = base64Pattern.exec(src)) !== null) {
+      const potential = match[1];
+      
+      try {
+        // Try to decode
+        const decoded = Buffer.from(potential, 'base64').toString('utf-8');
+        
+        // Check if it's valid UTF-8 (printable characters)
+        if (/^[\x20-\x7E\n\r\t]*$/.test(decoded) && decoded.length > 2) {
+          decodedStrings.push({
+            original: potential,
+            decoded: decoded,
+            position: match.index,
+            confidence: 'high'
+          });
+        }
+      } catch (e) {
+        // Not valid base64, skip
+      }
+    }
+
+    return decodedStrings;
+  }
+
+  // Deobfuscate by replacing Base64 with decoded values
+  deobfuscateBase64(src) {
+    let result = src;
+    const decodedStrings = this.decodeBase64Strings(src);
+
+    for (const item of decodedStrings) {
+      // Replace base64 with decoded value in comments
+      result = result.replace(
+        new RegExp(`["']${item.original}["']`, 'g'),
+        `"${item.decoded}" -- [DECODED]`
+      );
+    }
+
+    return result;
+  }
+
   extractStrings(src) {
     const strings = [];
-    // Match single and double quoted strings
     const stringPattern = /(['"])(?:(?=(\\?))\2.)*?\1/g;
     let match;
     while ((match = stringPattern.exec(src)) !== null) {
@@ -21,7 +67,6 @@ class LuaDumper {
     return strings;
   }
 
-  // Find function definitions
   getFunctions(src) {
     const patterns = [
       /function\s+(\w+)\s*\(\s*([^)]*)\s*\)/g,
@@ -48,13 +93,11 @@ class LuaDumper {
       }
     }
 
-    // Remove duplicates
     return functions.filter((f, i, arr) => 
       arr.findIndex(x => x.name === f.name && x.position === f.position) === i
     );
   }
 
-  // Find patterns like table definitions, assignments, etc
   scanPatterns(src) {
     const patterns = {
       tables: [],
@@ -64,7 +107,6 @@ class LuaDumper {
       conditionals: [],
     };
 
-    // Table definitions
     const tablePattern = /(\w+)\s*=\s*\{[^}]*\}/g;
     let match;
     while ((match = tablePattern.exec(src)) !== null) {
@@ -75,7 +117,6 @@ class LuaDumper {
       });
     }
 
-    // Assignments
     const assignPattern = /local\s+(\w+)\s*=\s*([^\n;]+)/g;
     while ((match = assignPattern.exec(src)) !== null) {
       patterns.assignments.push({
@@ -85,7 +126,6 @@ class LuaDumper {
       });
     }
 
-    // Comments
     const commentPattern = /--(.*?)$/gm;
     while ((match = commentPattern.exec(src)) !== null) {
       patterns.comments.push({
@@ -94,7 +134,6 @@ class LuaDumper {
       });
     }
 
-    // Loops
     const loopPattern = /(for|while|repeat)\s+[^\n]+/g;
     while ((match = loopPattern.exec(src)) !== null) {
       patterns.loops.push({
@@ -104,7 +143,6 @@ class LuaDumper {
       });
     }
 
-    // Conditionals
     const condPattern = /(if|elseif|else)\s+[^\n]+/g;
     while ((match = condPattern.exec(src)) !== null) {
       patterns.conditionals.push({
@@ -117,7 +155,6 @@ class LuaDumper {
     return patterns;
   }
 
-  // Calculate metrics about the code
   getMetrics(src) {
     const lines = src.split('\n');
     return {
@@ -132,7 +169,6 @@ class LuaDumper {
     };
   }
 
-  // Detect if code appears to be obfuscated
   detectObfuscation(src) {
     const indicators = {
       longVariableNames: (src.match(/_[a-zA-Z0-9_]{20,}/g) || []).length,
@@ -140,20 +176,26 @@ class LuaDumper {
       minifiedWhitespace: src.split('\n').filter(l => l.length > 200).length,
       singleCharVars: (src.match(/\s[a-z]\s*=/g) || []).length,
       noComments: src.match(/--/g) === null,
+      base64Strings: (src.match(/["'][A-Za-z0-9+/]{20,}={0,2}["']/g) || []).length,
     };
 
     const score = Object.values(indicators).reduce((a, b) => a + (b > 0 ? 1 : 0), 0);
     return {
       suspected: score >= 3,
       indicators,
-      confidence: Math.round((score / 5) * 100),
+      confidence: Math.round((score / 6) * 100),
     };
   }
 
-  // Main analysis function
-  analyze(filepath, mode = 'full') {
+  analyze(filepath, mode = 'full', deobfuscate = false) {
     try {
-      const src = fs.readFileSync(filepath, 'utf-8');
+      let src = fs.readFileSync(filepath, 'utf-8');
+
+      // Deobfuscate Base64 if requested
+      let deobfuscatedCode = null;
+      if (deobfuscate) {
+        deobfuscatedCode = this.deobfuscateBase64(src);
+      }
 
       const result = {
         file: filepath,
@@ -163,6 +205,8 @@ class LuaDumper {
         functions: this.getFunctions(src),
         strings: null,
         patterns: null,
+        deobfuscatedCode: deobfuscatedCode,
+        base64Decoded: this.decodeBase64Strings(src),
       };
 
       if (mode === 'full' || mode === 'strings') {
@@ -183,17 +227,18 @@ class LuaDumper {
     }
   }
 
-  // Generate summary
   summary(results) {
     const totalFuncs = results.reduce((sum, r) => sum + (r.functions?.length || 0), 0);
     const totalStrings = results.reduce((sum, r) => sum + (r.strings?.length || 0), 0);
     const obfuscatedCount = results.filter(r => r.metrics?.is_obfuscated?.suspected).length;
+    const base64Count = results.reduce((sum, r) => sum + (r.base64Decoded?.length || 0), 0);
 
     return {
       files_analyzed: results.length,
       total_functions: totalFuncs,
       total_strings: totalStrings,
       obfuscated_files: obfuscatedCount,
+      base64_strings_found: base64Count,
       errors: results.filter(r => r.error).length,
       timestamp: new Date().toISOString(),
     };
